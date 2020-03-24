@@ -2,18 +2,18 @@
 Anomaly detection from OS logs using Transformers implemented with Pytorch. 
 
 # DeepLog
-A Pytorch implementation of [DeepLog](https://www.cs.utah.edu/~lifeifei/papers/deeplog.pdf)'s log key anomaly detection model using [Transformer] (https://arxiv.org/pdf/1706.03762.pdf). Implementation is divided into Parsing and Anomaly Detection.
+A Pytorch implementation of [DeepLog](https://www.cs.utah.edu/~lifeifei/papers/deeplog.pdf)'s log key anomaly detection model using [Transformer](https://arxiv.org/pdf/1706.03762.pdf). Implementation is divided into Parsing and Anomaly Detection.
 
 ## Dataset
 Currently, the dataset being used is extracted from an Elastic Search private repository.
 However, log datasets can be downloaded in [loghub](https://github.com/logpai/loghub).
 
 ## Parser
-Parser implementation is based on [Spell] (https://www.cs.utah.edu/~lifeifei/papers/spell.pdf) parser is used to obtain structured representationg log entries. Actual base implementation can be found on [logparser] (https://github.com/logpai/logparser). 
+Parser implementation is based on [Spell](https://www.cs.utah.edu/~lifeifei/papers/spell.pdf) parser is used to obtain structured representationg log entries. Actual base implementation can be found on [logparser](https://github.com/logpai/logparser). 
 
 ## Anomaly Detection
-Anomaly detection is based on unsupervised learning. [Transformer] (https://arxiv.org/pdf/1706.03762.pdf)-based models have proven to be effective in language generation. Similarly to generating words or letters, the model learns to generate next log entries. The model is trained to learn the normal behavior of log entries, learning to generate normal log entries. A log entry is considered an anomaly if next log entry is not within top predicted log entries. 
-Actual base implementation can be found on [harvardnlp] (https://github.com/harvardnlp/annotated-transformer). 
+Anomaly detection is based on unsupervised learning. [Transformer](https://arxiv.org/pdf/1706.03762.pdf)-based models have proven to be effective in language generation. Similarly to generating words or letters, the model learns to generate next log entries. The model is trained to learn the normal behavior of log entries, learning to generate normal log entries. A log entry is considered an anomaly if next log entry is not within top predicted log entries. 
+Actual base implementation can be found on [harvardnlp](https://github.com/harvardnlp/annotated-transformer). 
 
 ## Reference
 Min Du, Feifei Li, Guineng Zheng, Vivek Srikumar. "Deeplog: Anomaly detection and diagnosis from system logs through deep learning." ACM SIGSAC Conference on Computer and Communications Security(CCS), 2017.
