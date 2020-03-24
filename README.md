@@ -9,7 +9,7 @@ Currently, the dataset being used is extracted from an Elastic Search private re
 However, log datasets can be downloaded in [loghub](https://github.com/logpai/loghub).
 
 ## Parser
-Parser implementation is based on [Spell](https://www.cs.utah.edu/~lifeifei/papers/spell.pdf) parser is used to obtain structured representationg log entries. Actual base implementation can be found on [logparser](https://github.com/logpai/logparser). 
+Parser implementation is based on [Spell](https://www.cs.utah.edu/~lifeifei/papers/spell.pdf) parser used to obtain structured representationg log entries. Actual base implementation can be found on [logparser](https://github.com/logpai/logparser). 
 
 ## Anomaly Detection
 Anomaly detection is based on unsupervised learning. [Transformer](https://arxiv.org/pdf/1706.03762.pdf)-based models have proven to be effective in language generation. Similarly to generating words or letters, the model learns to generate next log entries. The model is trained to learn the normal behavior of log entries, learning to generate normal log entries. A log entry is considered an anomaly if next log entry is not within top predicted log entries. 
