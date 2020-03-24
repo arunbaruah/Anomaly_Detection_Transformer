@@ -4,6 +4,8 @@ Anomaly detection from OS logs using Transformers implemented with Pytorch.
 # DeepLog
 A Pytorch implementation of [DeepLog](https://www.cs.utah.edu/~lifeifei/papers/deeplog.pdf)'s log key anomaly detection model using [Transformer](https://arxiv.org/pdf/1706.03762.pdf). Implementation is divided into Parsing and Anomaly Detection.
 
+![Architecture](images/arch.PNG)
+
 ## Dataset
 Currently, the dataset being used is extracted from an Elastic Search private repository.
 However, log datasets can be downloaded in [loghub](https://github.com/logpai/loghub).
