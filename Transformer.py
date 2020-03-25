@@ -1,10 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Prelims
-
-# In[38]:
-
 import numpy as np
 import math, copy, time
 
@@ -38,10 +34,7 @@ class EncoderDecoder(nn.Module):
     def decode(self, memory, src_mask, tgt, tgt_mask):
         return self.decoder(self.tgt_embed(tgt), memory, src_mask, tgt_mask)
 
-
-# In[7]:
-
-
+    
 class Generator(nn.Module):
     #Define standard linear + softmax generation step.
     def __init__(self, d_model, vocab):
@@ -51,16 +44,9 @@ class Generator(nn.Module):
     def forward(self, x):
         return F.log_softmax(self.proj(x), dim=-1)
 
-
-# In[8]:
-
-
 def clones(module, N):
     #Produce N identical layers.
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
-
-
-# In[9]:
 
 
 class Encoder(nn.Module):
@@ -77,9 +63,6 @@ class Encoder(nn.Module):
         return self.norm(x)
 
 
-# In[10]:
-
-
 class LayerNorm(nn.Module):
     #Construct a layernorm module (See citation for details).
     def __init__(self, features, eps=1e-6):
@@ -94,9 +77,6 @@ class LayerNorm(nn.Module):
         return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
 
 
-# In[11]:
-
-
 class SublayerConnection(nn.Module):
     #A residual connection followed by a layer norm.
     def __init__(self, size, dropout):
@@ -107,9 +87,6 @@ class SublayerConnection(nn.Module):
     def forward(self, x, sublayer):
         #Apply residual connection to any sublayer with the same size.
         return x + self.dropout(sublayer(self.norm(x)))
-
-
-# In[12]:
 
 
 class EncoderLayer(nn.Module):
@@ -126,9 +103,6 @@ class EncoderLayer(nn.Module):
         return self.sublayer[1](x, self.feed_forward)
 
 
-# In[13]:
-
-
 class Decoder(nn.Module):
     #Generic N layer decoder with masking.
     def __init__(self, layer, N):
@@ -141,10 +115,7 @@ class Decoder(nn.Module):
             x = layer(x, memory, src_mask, tgt_mask)
         return self.norm(x)
 
-
-# In[14]:
-
-
+    
 class DecoderLayer(nn.Module):
     "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
     def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
@@ -162,18 +133,12 @@ class DecoderLayer(nn.Module):
         x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
         return self.sublayer[2](x, self.feed_forward)
 
-
-# In[15]:
-
-
+    
 def subsequent_mask(size):
     "Mask out subsequent positions."
     attn_shape = (1, size, size)
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
     return torch.from_numpy(subsequent_mask) == 0
-
-
-# In[16]:
 
 
 def attention(query, key, value, mask=None, dropout=None):
@@ -186,9 +151,6 @@ def attention(query, key, value, mask=None, dropout=None):
     if dropout is not None:
         p_attn = dropout(p_attn)
     return torch.matmul(p_attn, value), p_attn
-
-
-# In[17]:
 
 
 class MultiHeadedAttention(nn.Module):
@@ -222,9 +184,6 @@ class MultiHeadedAttention(nn.Module):
         return self.linears[-1](x)
 
 
-# In[18]:
-
-
 class PositionwiseFeedForward(nn.Module):
     "Implements FFN equation."
     def __init__(self, d_model, d_ff, dropout=0.1):
@@ -237,9 +196,6 @@ class PositionwiseFeedForward(nn.Module):
         return self.w_2(self.dropout(F.relu(self.w_1(x))))
 
 
-# In[19]:
-
-
 class Embeddings(nn.Module):
     def __init__(self, d_model, vocab):
         super(Embeddings, self).__init__()
@@ -248,9 +204,6 @@ class Embeddings(nn.Module):
 
     def forward(self, x):
         return self.lut(x) * math.sqrt(self.d_model)
-
-
-# In[20]:
 
 
 class PositionalEncoding(nn.Module):
@@ -274,9 +227,6 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-# In[21]:
-
-
 def make_model(src_vocab, tgt_vocab, N=6, 
                d_model=512, d_ff=2048, h=8, dropout=0.1):
     "Helper: Construct a model from hyperparameters."
@@ -294,9 +244,6 @@ def make_model(src_vocab, tgt_vocab, N=6,
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
     return model
-
-
-# In[22]:
 
 
 class Batch:
@@ -319,11 +266,6 @@ class Batch:
         return tgt_mask
 
 
-# ## Training Loop
-
-# In[23]:
-
-
 global max_src_in_batch, max_tgt_in_batch
 def batch_size_fn(new, count, sofar):
     "Keep augmenting batch and calculate total number of tokens + padding."
@@ -336,9 +278,6 @@ def batch_size_fn(new, count, sofar):
     src_elements = count * max_src_in_batch
     tgt_elements = count * max_tgt_in_batch
     return max(src_elements, tgt_elements)
-
-
-# In[24]:
 
 
 class NoamOpt:
@@ -372,9 +311,6 @@ def get_std_opt(model):
             torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
 
 
-# In[25]:
-
-
 class LabelSmoothing(nn.Module):
     "Implement label smoothing."
     def __init__(self, size, padding_idx, smoothing=0.0):
@@ -399,11 +335,6 @@ class LabelSmoothing(nn.Module):
         return self.criterion(x, Variable(true_dist, requires_grad=False))
 
 
-# ## Loss Computation
-
-# In[26]:
-
-
 class SimpleLossCompute:
     "A simple loss compute and train function."
     def __init__(self, generator, criterion, opt=None):
@@ -419,9 +350,6 @@ class SimpleLossCompute:
             self.opt.step()
             self.opt.optimizer.zero_grad()
         return loss.item() * norm
-
-
-# In[27]:
 
 
 def run_epoch(data_iter, model, loss_compute):
@@ -445,9 +373,6 @@ def run_epoch(data_iter, model, loss_compute):
             start = time.time()
             tokens = 0
     return total_loss / total_tokens
-
-
-# In[33]:
 
 
 def greedy_decode(model, src, src_mask,tgt, max_len, start_symbol):
