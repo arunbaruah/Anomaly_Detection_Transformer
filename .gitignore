@@ -1,0 +1,12 @@
+data/
+model/
+__pycache__/
+Spell_result/
+SpellES.py
+Drain.py
+anomaly_detection_pres.ipynb
+anomaly_pres.ipynb
+test_ES.ipynb
+test_model.ipynb
+test_parser.ipynb
+.ipynb_checkpoints/
