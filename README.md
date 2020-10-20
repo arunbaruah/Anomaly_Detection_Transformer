@@ -7,7 +7,7 @@ A Pytorch implementation of [DeepLog](https://www.cs.utah.edu/~lifeifei/papers/d
 
 ## Dataset
 Currently, the dataset being used is extracted from an Elastic Search private repository.
-However, log datasets can be downloaded in [loghub](https://github.com/logpai/loghub).
+However, log datasets can be downloaded from [loghub](https://github.com/logpai/loghub).
 
 ## Parser
 Parser implementation is based on [Spell](https://www.cs.utah.edu/~lifeifei/papers/spell.pdf) parser used to obtain structured representationg log entries. Actual base implementation can be found on [logparser](https://github.com/logpai/logparser). 
