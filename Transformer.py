@@ -3,15 +3,20 @@
 
 import numpy as np
 import math, copy, time
+import pandas as pd
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchtext import data, datasets
 from torch.utils.data import TensorDataset, DataLoader
 from torch.autograd import Variable
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
 WINDOW_SIZE = 10
+VOCAB_SIZE = 29
 
 class EncoderDecoder(nn.Module):
 #    A standard Encoder-Decoder architecture. Base for this and many other models.
@@ -25,8 +30,7 @@ class EncoderDecoder(nn.Module):
         
     def forward(self, src, tgt, src_mask, tgt_mask):
         #Take in and process masked src and target sequences.
-        return self.decode(self.encode(src, src_mask), src_mask,
-                            tgt, tgt_mask)
+        return self.decode(self.encode(src, src_mask), src_mask, tgt, tgt_mask)
     
     def encode(self, src, src_mask):
         return self.encoder(self.src_embed(src), src_mask)
@@ -144,7 +148,7 @@ def subsequent_mask(size):
 def attention(query, key, value, mask=None, dropout=None):
     "Compute 'Scaled Dot Product Attention'"
     d_k = query.size(-1)
-    scores = torch.matmul(query, key.transpose(-2, -1))              / math.sqrt(d_k)
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
     p_attn = F.softmax(scores, dim = -1)
@@ -203,7 +207,9 @@ class Embeddings(nn.Module):
         self.d_model = d_model
 
     def forward(self, x):
-        return self.lut(x) * math.sqrt(self.d_model)
+        emb = self.lut(x) * math.sqrt(self.d_model)
+            
+        return emb
 
 
 class PositionalEncoding(nn.Module):
@@ -227,22 +233,24 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-def make_model(src_vocab, tgt_vocab, N=6, 
-               d_model=512, d_ff=2048, h=8, dropout=0.1):
+def make_model(src_vocab, tgt_vocab, N=6, d_model=512, d_ff=2048, h=8, dropout=0.1):
     "Helper: Construct a model from hyperparameters."
     c = copy.deepcopy
     attn = MultiHeadedAttention(h, d_model)
     ff = PositionwiseFeedForward(d_model, d_ff, dropout)
     position = PositionalEncoding(d_model, dropout)
+    
     model = EncoderDecoder(
         Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
         Decoder(DecoderLayer(d_model, c(attn), c(attn), c(ff), dropout), N),
         nn.Sequential(Embeddings(d_model, src_vocab), c(position)),
         nn.Sequential(Embeddings(d_model, tgt_vocab), c(position)),
         Generator(d_model, tgt_vocab))
+    
     for p in model.parameters():
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
+
     return model
 
 
@@ -351,6 +359,89 @@ class SimpleLossCompute:
             self.opt.optimizer.zero_grad()
         return loss.item() * norm
 
+class MyIterator(data.Iterator):
+    def create_batches(self):
+        if self.train:
+            def pool(d, random_shuffler):
+                for p in data.batch(d, self.batch_size * 100):
+                    p_batch = data.batch(
+                        sorted(p, key=self.sort_key),
+                        self.batch_size, self.batch_size_fn)
+                    for b in random_shuffler(list(p_batch)):
+                        yield b
+            self.batches = pool(self.data(), self.random_shuffler)
+            
+        else:
+            self.batches = []
+            for b in data.batch(self.data(), self.batch_size,
+                                          self.batch_size_fn):
+                self.batches.append(sorted(b, key=self.sort_key))
+
+def rebatch(pad_idx, batch):
+    "Fix order in torchtext to match ours"
+    src, trg = batch.src.transpose(0, 1), batch.trg.transpose(0, 1)
+    return Batch(src, trg, pad_idx)
+    
+class MultiGPULossCompute:
+    "A multi-gpu loss compute and train function."
+    def __init__(self, generator, criterion, devices, opt=None, chunk_size=5):
+        # Send out to different gpus.
+        self.generator = generator
+        self.criterion = nn.parallel.replicate(criterion, 
+                                               devices=devices)
+        self.opt = opt
+        self.devices = devices
+        self.chunk_size = chunk_size
+        
+    def __call__(self, out, targets, normalize):
+        total = 0.0
+        
+        generator = nn.parallel.replicate(self.generator, 
+                                                devices=self.devices)
+        out_scatter = nn.parallel.scatter(out, 
+                                          target_gpus=self.devices)
+        out_grad = [[] for _ in out_scatter]
+        targets = nn.parallel.scatter(targets, 
+                                      target_gpus=self.devices)
+
+        # Divide generating into chunks.
+        chunk_size = self.chunk_size
+        for i in range(0, out_scatter[0].size(1), chunk_size):
+            # Predict distributions
+            out_column = [[Variable(o[:, i:i+chunk_size].data, 
+                                    requires_grad=self.opt is not None)] 
+                           for o in out_scatter]
+            gen = nn.parallel.parallel_apply(generator, out_column)
+
+            # Compute loss. 
+            y = [(g.contiguous().view(-1, g.size(-1)), 
+                  t[:, i:i+chunk_size].contiguous().view(-1)) 
+                 for g, t in zip(gen, targets)]
+            loss = nn.parallel.parallel_apply(self.criterion, y)
+
+            # Sum and normalize loss
+            l = nn.parallel.gather(loss, target_device=self.devices[0])
+            # l = l.sum()[0] / normalize
+            l = l.sum() / normalize
+            total += l.data
+            # total += l.data
+
+            # Backprop loss to output of transformer
+            if self.opt is not None:
+                l.backward()
+                for j, l in enumerate(loss):
+                    out_grad[j].append(out_column[j][0].grad.data.clone())
+
+        # Backprop all loss through transformer.            
+        if self.opt is not None:
+            out_grad = [Variable(torch.cat(og, dim=1)) for og in out_grad]
+            o1 = out
+            o2 = nn.parallel.gather(out_grad, 
+                                    target_device=self.devices[0])
+            o1.backward(gradient=o2)
+            self.opt.step()
+            self.opt.optimizer.zero_grad()
+        return total * normalize
 
 def run_epoch(data_iter, model, loss_compute):
     "Standard Training and Logging Function"
@@ -365,85 +456,291 @@ def run_epoch(data_iter, model, loss_compute):
         total_loss += loss
         total_tokens += batch.ntokens
         tokens += batch.ntokens
-        x=out
+        x = out
         if i % 50 == 1:
             elapsed = time.time() - start
-            print("Epoch Step: %d Loss: %f Tokens per Sec: %f" %
-                    (i, loss / batch.ntokens, tokens / elapsed))
+            print("Epoch Step: %d Loss: %f Tokens per Sec: %f" % (i, loss / batch.ntokens, tokens / elapsed))
             start = time.time()
             tokens = 0
     return total_loss / total_tokens
 
 
-def greedy_decode(model, src, src_mask,tgt, max_len, start_symbol):
+def greedy_decode(model, src, src_mask, tgt, max_len, start_symbol, pred, g):
     memory = model.encode(src, src_mask)
     ys = torch.ones(1, 1).fill_(start_symbol).type_as(src.data)
+    
+    torch.set_printoptions(precision=2)
+    
     for i in range(max_len-1):
-        out = model.decode(memory, src_mask, 
-                           Variable(ys), 
-                           Variable(subsequent_mask(ys.size(1))
-                                    .type_as(src.data)))
+        out = model.decode(memory, src_mask, Variable(ys), Variable(subsequent_mask(ys.size(1)).type_as(src.data)))
         prob = model.generator(out[:, -1])
-        predicted = torch.argsort(prob, 1)[0][-9:]
-        label = tgt[0][i]
-        if label ==0:
+       
+        predicted = torch.argsort(prob, 1)[0][-g:]
+        label = tgt[0][i]   
+             
+        if label == 0:
             return ys
         _, next_key = torch.max(prob, dim = 1)
-        
-        print("\nlabel: ", label)
-        print("predicted:", predicted)
-        print("next_key:", next_key)
-        
         next_key = next_key.data[0]
+        
+        if pred:
+            print("Incoming log:", label) 
+            print("Candidate logs:", predicted, "\n")
+#             print("Probabilities: ", torch.sort(prob,1)[0][0][-g:])
+
         if label not in predicted:
             abn = torch.tensor([-1])
             abn = abn.data[0]
+            ys = torch.cat([ys,torch.ones(1, 1).type_as(src.data).fill_(label)], dim=1)
             ys = torch.cat([ys,torch.ones(1, 1).type_as(src.data).fill_(abn)], dim=1)
-            return ys
+            # print(ys[:,1:])
+            return ys[:,1:]
         else: 
-            ys = torch.cat([ys,torch.ones(1, 1).type_as(src.data).fill_(next_key)], dim=1)
-    return ys
-
-def data_gen(inp, vocab_size, WINDOW_SIZE, batch, nbatches):
-
-    t1 = torch.from_numpy(np.zeros((batch, WINDOW_SIZE+1),dtype=int))
-    t2 = torch.from_numpy(np.zeros((batch, WINDOW_SIZE+1),dtype=int))
-    low = 0
-    for j in range(nbatches):
-        for i in range(batch):
-            low = WINDOW_SIZE * (i * 2)
-            middle = low + WINDOW_SIZE
-            high = middle + WINDOW_SIZE
-            
-            x = inp[low : middle]
-            y = inp[middle : high]    
-            t1[i][1:WINDOW_SIZE+1] = torch.tensor(x, dtype=torch.float).to(device)
-            t2[i][1:len(y)+1] = torch.tensor(y, dtype=torch.float).to(device)
-            
-            t1[:,0] = 1 
-            t2[:,0] = 1
-        src = Variable(t1, requires_grad=False)
-        tgt = Variable(t2, requires_grad=False)
-        yield Batch(src, tgt, 0)
+            ys = torch.cat([ys,torch.ones(1, 1).type_as(src.data).fill_(label)], dim=1)
+            # _, next_key = torch.max(prob, dim = 1)
+            # next_key = next_key.data[0]
+            # ys = torch.cat([ys,torch.ones(1, 1).type_as(src.data).fill_(next_key)], dim=1)
+                    
+    return ys[:,1:]
         
-def data_gen2(filename, V,WINDOW_SIZE, batch, nbatches):
+def data_gen(filename, V, WINDOW_SIZE, batch, nbatches):
+
+    num_sessions = 0
     inputs = []
-    with open("Dataset/"+filename, 'r') as f:
-        for line in f.readlines():
-            line = list(map(lambda n: n, map(int, line.strip().split())))
-            line = line + [-1] * (WINDOW_SIZE + 1 - len(line))
-            inputs.append(tuple(line))
-    
+    outputs = []
     t1 = torch.from_numpy(np.zeros((batch, WINDOW_SIZE+1),dtype=int))
     t2 = torch.from_numpy(np.zeros((batch, WINDOW_SIZE+1),dtype=int))
     
-    for j in range(nbatches):
-        for i in range(batch):           
-            x = inputs[i+j*10][0:WINDOW_SIZE]
-            y = inputs[i+j*10][WINDOW_SIZE+1:WINDOW_SIZE*2]
-            t1[i][1:WINDOW_SIZE+1] = torch.tensor(x, dtype=torch.float).to(device)
-            t2[i][1:len(y)+1] = torch.tensor(y, dtype=torch.float).to(device)
-            t1[:,0] = t2[:,0] = 1
+    with open('Dataset/' + filename, 'r') as f:        
+        for line in f.readlines():
+            num_sessions += 1
+            line = tuple(map(lambda n: n, map(int, line.strip().split())))
+            inputs.append(line[0: WINDOW_SIZE])
+            outputs.append(line[WINDOW_SIZE:WINDOW_SIZE*2])
+
+            if len(outputs[-1]) != WINDOW_SIZE: 
+                for _ in range(WINDOW_SIZE - len(outputs[-1])): 
+                    outputs[-1] = outputs[-1] + (0,)
+            if len(inputs[-1]) != WINDOW_SIZE: 
+                for _ in range(WINDOW_SIZE - len(inputs[-1])): 
+                    inputs[-1] = inputs[-1] + (0,)
+                    
+        for j in range(nbatches):
+            for i in range(batch):           
+                x = inputs[i]
+                y = outputs[i]
+                t1[i][1:] = torch.tensor(x, dtype=torch.float).to(device)
+                t2[i][1:] = torch.tensor(y, dtype=torch.float).to(device)
+
+                t1[:,0] = 1
+                t2[:,0] = 1
+            src = Variable(t1, requires_grad=False)
+            tgt = Variable(t2, requires_grad=False)
+
+            yield Batch(src, tgt, 0)
+            
+def train(N=2, d_model=512, d_ff=2048, h=4, dropout=0.1):
+    
+    log_keys = "HDFS/hdfs_train"
+    devices = [0, 1]
+    frac = 1
+
+    print(N, d_model, d_ff, h, dropout)
+
+    # data_train = generate('hdfs_train')
+    # BOS_WORD = '<s>'
+    # EOS_WORD = '</s>'
+    # BLANK_WORD = "<blank>"
+    # SRC = data.Field(pad_token=BLANK_WORD)
+    # TGT = data.Field(init_token = BOS_WORD, eos_token = EOS_WORD, pad_token=BLANK_WORD)
+    # MAX_LEN = 10
+    # MIN_FREQ = 2
+    # SRC.build_vocab(source, min_freq=MIN_FREQ)
+    # TGT.build_vocab(target, min_freq=MIN_FREQ)
+    # model = make_model(len(SRC.vocab), len(TGT.vocab), N=N)
+    # criterion = LabelSmoothing(size=len(TGT.vocab), padding_idx=0, smoothing=0.1)
+    # BATCH_SIZE = 12000
+    # train_iter = MyIterator(train, batch_size=BATCH_SIZE, device=0,
+    #                         repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
+    #                         batch_size_fn=batch_size_fn, train=True)
+    # valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=0,
+    #                         repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
+    #                         batch_size_fn=batch_size_fn, train=False)
+
+    #Build model
+    model = make_model(VOCAB_SIZE, VOCAB_SIZE, N=N, d_model=d_model, d_ff=d_ff, h=h, dropout=dropout)
+    criterion = LabelSmoothing(size = VOCAB_SIZE, padding_idx=0, smoothing=0.0)
+
+    # global_model.cuda()
+    # criterion.cuda()
+    
+    model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400, torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+    model_par = nn.DataParallel(model, device_ids=devices)
+    
+    for epoch in range(10):
+        model.train()
+        run_epoch(data_gen(log_keys, VOCAB_SIZE, WINDOW_SIZE, 10, 30), model, SimpleLossCompute(model.generator, criterion, model_opt))
+        # print(run_epoch(data_gen(log_keys, VOCAB_SIZE, WINDOW_SIZE, 10, 30), model_par, MultiGPULossCompute(global_model.generator, criterion, devices=devices, opt=model_opt)))
+        model.eval()
+        print(run_epoch(data_gen(log_keys, VOCAB_SIZE, WINDOW_SIZE, 10, 5), model, SimpleLossCompute(model.generator, criterion, None)))
+        # print(run_epoch(data_gen(log_keys, VOCAB_SIZE, WINDOW_SIZE, 10, 5), model_par, MultiGPULossCompute(global_model.generator, criterion, devices=devices, opt=None)))       
+    torch.save(model.state_dict(), "Model/centralized_model.pt")
+    torch.save(model, "Model/centralized_models.pt")
+
+    return model
+
+def federated_training(rounds = 1, clients = 0, N=2, d_model=512, d_ff=2048, h=4, dropout=0.1):
+    log_keys = "HDFS_1/hdfs_train"
+    devices = [0, 1]
+    frac = 1
+
+    global_model = make_model(VOCAB_SIZE, VOCAB_SIZE, N=N, d_model=d_model, d_ff=d_ff, h=h, dropout=dropout)
+    criterion = LabelSmoothing(size = VOCAB_SIZE, padding_idx=0, smoothing=0.0)
+
+    print(N, d_model, d_ff, h, dropout)
+
+    # Set the model to train and send it to device.
+    # global_model.to(device)
+    # global_model.train()
+
+    # copy weights
+    # global_weights = global_model.state_dict()
+    global_weights = []
+
+    # Training
+    train_loss, train_accuracy = [], []
+    val_acc_list, net_list = [], []
+    cv_loss, cv_acc = [], []
+    print_every = 2
+    val_loss_pre, counter = 0, 0       
+
+    for epoch in tqdm(range(rounds)):
+        local_weights, local_losses = [], []
+        print(f'\n | Global Training Round : {epoch+1} |\n')
+        
+        m = max(int(frac * clients), 1)
+        idxs_users = np.random.choice(range(clients), m, replace=False)
+
+        for i in idxs_users:
+            print("Client:", i)
+
+            log_keys = "hdfs_train" + str(i)
+            model = make_model(VOCAB_SIZE, VOCAB_SIZE, N=N, d_model=d_model, d_ff=d_ff, h=h, dropout=dropout)
+
+            model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400, torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+                
+            for epoch in range(10):
+                model.train()
+                run_epoch(data_gen(log_keys, VOCAB_SIZE, WINDOW_SIZE, 10, 30), model, SimpleLossCompute(model.generator, criterion, model_opt))
+                # print(run_epoch(data_gen(log_keys, VOCAB_SIZE, WINDOW_SIZE, 10, 30), model_par, MultiGPULossCompute(global_model.generator, criterion, devices=devices, opt=model_opt)))
+                model.eval()
+                print(run_epoch(data_gen(log_keys, VOCAB_SIZE, WINDOW_SIZE, 10, 5), model, SimpleLossCompute(model.generator, criterion, None)))
+                # print(run_epoch(data_gen(log_keys, VOCAB_SIZE, WINDOW_SIZE, 10, 5), model_par, MultiGPULossCompute(global_model.generator, criterion, devices=devices, opt=None)))       
+
+            local_weights.append(copy.deepcopy(model.state_dict()))
+            torch.save(model.state_dict(), "Model/model" + str(i) + ".pt")
+
+        global_weights = average_weights(local_weights)
+        global_model.load_state_dict(global_weights)
+        torch.save(global_model, "Model/global_models.pt")
+    
+    return global_model
+
+def test(model):
+
+    FP = 0
+    TP = 0
+    TN = 0
+    FN = 0
+
+    model.eval()
+
+    num = 5000
+
+    input_n, output_n = generate("HDFS/hdfs_test_normal")
+    input_a, output_a = generate("HDFS/hdfs_test_abnormal")
+
+    src_mask = Variable(torch.ones(1, 1, WINDOW_SIZE + 1) )
+
+    t1 = torch.from_numpy(np.zeros((1, WINDOW_SIZE + 1),dtype=int))
+    t2 = torch.from_numpy(np.zeros((1, WINDOW_SIZE),dtype=int))
+    start_time = time.time()
+    
+    for i in range(num):
+
+        t1[0][1:WINDOW_SIZE+1] = torch.tensor(input_n[i], dtype=torch.float).to(device)
+        t2[0][0:WINDOW_SIZE+1] = torch.tensor(output_n[i], dtype=torch.float).to(device)
+        
+        t1[0][0]=1
+
         src = Variable(t1, requires_grad=False)
         tgt = Variable(t2, requires_grad=False)
-        yield Batch(src, tgt, 0)
+
+        pred = greedy_decode(model, src, src_mask, tgt, max_len=WINDOW_SIZE+1, start_symbol=1, pred=False, g=9) 
+        
+        if -1 in pred: FP = FP + 1
+        else: TN = TN + 1
+
+        if (i%1000) == 0: print(i)
+
+    t1 = torch.from_numpy(np.zeros((1, WINDOW_SIZE + 1),dtype=int))
+    t2 = torch.from_numpy(np.zeros((1, WINDOW_SIZE + 1),dtype=int))
+
+    for i in range(num):
+
+        t1[0][1:len(input_a[i])+1] = torch.tensor(input_a[i], dtype=torch.float).to(device)
+        t2[0][1:WINDOW_SIZE+1] = torch.tensor(output_a[i], dtype=torch.float).to(device)
+        
+        t1[0][0]=1
+        t2[0][0]=1
+
+        src = Variable(t1, requires_grad=False)
+        tgt = Variable(t2, requires_grad=False)
+
+        pred = greedy_decode(model, src, src_mask, tgt, max_len=WINDOW_SIZE+1, start_symbol=1, pred=False, g=9) 
+        
+        if -1 in pred: TP = TP + 1
+        else:  FN = FN + 1
+        if (i%1000) == 0: print(i)
+
+    A = 100 * (TP + TN)/(TP + TN + FP + FN)
+    P = 100 * TP / (TP + FP)
+    R = 100 * TP / (TP + FN)
+    F1 = 2 * P * R / (P + R)
+    print('True positive (TP): {}, \ntrue negative (TN): {}, \nfalse positive (FP): {}, \nfalse negative (FN): {}, \nAccuracy: {:.3f}%, \nPrecision: {:.3f}%, \nRecall: {:.3f}%, \nF1-measure: {:.3f}%'.format(TP, TN, FP, FN, A, P, R, F1))
+
+    elapsed_time = time.time() - start_time
+    print('elapsed_time: {:.3f}s'.format(elapsed_time))
+
+    return 
+
+def average_weights(w):
+    w_avg = copy.deepcopy(w[0])
+    for key in w_avg.keys():
+        for i in range(1, len(w)):
+            w_avg[key] += w[i][key]
+        w_avg[key] = torch.div(w_avg[key], len(w))
+    return w_avg
+
+def generate(name):
+    hdfs = set()
+    inputs = []
+    outputs = []
+    num_sessions = 0
+    # hdfs = []
+
+    with open('Dataset/' + name, 'r') as f:
+        for line in f.readlines():
+            num_sessions += 1
+            line = tuple(map(lambda n: n, map(int, line.strip().split())))
+            ##for i in range(len(line) - WINDOW_SIZE):
+            inputs.append(line[0: WINDOW_SIZE])
+            outputs.append(line[WINDOW_SIZE:WINDOW_SIZE*2])           
+            
+            if len(outputs[-1]) != WINDOW_SIZE: 
+                for _ in range(WINDOW_SIZE - len(outputs[-1])): outputs[-1] = outputs[-1] + (0,)
+    
+    print(len(inputs))
+    print(len(outputs))
+
+    return inputs, outputs
