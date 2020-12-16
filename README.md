@@ -1,4 +1,4 @@
-# Anomaly Detection from OS Logs using Transformers
+# Anomaly Detection from OS Logs using Transformer
 Anomaly detection from OS logs using Transformers implemented with Pytorch. 
 
 A Pytorch implementation of [DeepLog](https://www.cs.utah.edu/~lifeifei/papers/deeplog.pdf)'s log key anomaly detection model using [Transformer](https://arxiv.org/pdf/1706.03762.pdf). Implementation is divided into Parsing and Anomaly Detection.
@@ -7,7 +7,7 @@ A Pytorch implementation of [DeepLog](https://www.cs.utah.edu/~lifeifei/papers/d
 
 ## Dataset
 Currently, the dataset being used is extracted from an Elastic Search private repository.
-However, log datasets can be downloaded in [loghub](https://github.com/logpai/loghub).
+However, log datasets can be downloaded from [loghub](https://github.com/logpai/loghub).
 
 ## Parser
 Parser implementation is based on [Spell](https://www.cs.utah.edu/~lifeifei/papers/spell.pdf) parser used to obtain structured representationg log entries. Actual base implementation can be found on [logparser](https://github.com/logpai/logparser). 
