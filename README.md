@@ -1,5 +1,5 @@
 # Anomaly Detection from OS Logs using Transformer
-Anomaly detection from OS logs using Transformers implemented with Pytorch. 
+Anomaly detection from logs using Transformers implemented with Pytorch. 
 
 A Pytorch implementation of log anomaly detection model using [Transformer](https://arxiv.org/pdf/1706.03762.pdf). Implementation is divided into Parsing and Anomaly Detection.
 
