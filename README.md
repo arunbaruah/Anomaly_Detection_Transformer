@@ -3,7 +3,7 @@ Anomaly detection from logs using Transformers implemented with Pytorch.
 
 A Pytorch implementation of log anomaly detection model using [Transformer](https://arxiv.org/pdf/1706.03762.pdf). Implementation is divided into Parsing and Anomaly Detection.
 
-![Architecture](images/arch.PNG)
+![Architecture](images/transformer_4.png)
 
 ## Dataset
 Currently, the dataset being used is extracted from an Elastic Search private repository.
