@@ -1,7 +1,7 @@
 # Anomaly Detection from OS Logs using Transformer
 Anomaly detection from OS logs using Transformers implemented with Pytorch. 
 
-A Pytorch implementation of [DeepLog](https://www.cs.utah.edu/~lifeifei/papers/deeplog.pdf)'s log key anomaly detection model using [Transformer](https://arxiv.org/pdf/1706.03762.pdf). Implementation is divided into Parsing and Anomaly Detection.
+A Pytorch implementation of log key anomaly detection model using [Transformer](https://arxiv.org/pdf/1706.03762.pdf). Implementation is divided into Parsing and Anomaly Detection.
 
 ![Architecture](images/arch.PNG)
 
