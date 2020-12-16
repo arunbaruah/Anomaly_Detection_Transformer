@@ -18,9 +18,6 @@ Anomaly detection is based on unsupervised learning. [Transformer](https://arxiv
 ![Flow](images/flow.png)
 
 The model is trained to learn the normal behavior of log entries, learning to generate normal log entries. 
-
-![Training](images/training.png)
-
 A log entry is considered an anomaly if next log entry is not within top predicted log entries.
 
 ![Testing](images/detection.png)
